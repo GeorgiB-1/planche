@@ -91,6 +91,16 @@ class SwapResult(BaseModel):
     new_product: dict
 
 
+class RefineResult(BaseModel):
+    """Result of an iterative design refinement."""
+
+    design_id: str
+    render_url: str
+    version: int
+    refinement_description: str | None = None
+    previous_render_url: str
+
+
 class BudgetTier(BaseModel):
     """Definition of a budget tier (e.g. economy, mid-range, premium)."""
 

@@ -74,6 +74,14 @@ export interface DesignResult {
   budget_remaining: number;
 }
 
+export interface RefineResult {
+  design_id: string;
+  render_url: string;
+  version: number;
+  refinement_description: string | null;
+  previous_render_url: string;
+}
+
 export interface SwapAlternative {
   id: string;
   name: string;
@@ -147,7 +155,7 @@ async function _handleResponse<T>(res: Response): Promise<T> {
  */
 export async function analyzeSketch(file: File): Promise<RoomData> {
   const form = new FormData();
-  form.append("file", file);
+  form.append("sketch", file);
 
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: "POST",
@@ -170,7 +178,7 @@ export async function furnishRoom(
   roomId?: string
 ): Promise<DesignResult> {
   const form = new FormData();
-  form.append("file", file);
+  form.append("sketch", file);
   form.append("budget", String(budget));
   form.append("tier", tier);
   form.append("style", style);
@@ -272,4 +280,29 @@ export async function swapProduct(
   });
 
   return _handleResponse<SwapResult>(res);
+}
+
+/**
+ * Refine an existing design with a text instruction and/or reference image.
+ *
+ * POST /api/refine  (multipart/form-data)
+ */
+export async function refineDesign(
+  designId: string,
+  instruction: string,
+  referenceImage?: File
+): Promise<RefineResult> {
+  const form = new FormData();
+  form.append("design_id", designId);
+  form.append("instruction", instruction);
+  if (referenceImage) {
+    form.append("reference_image", referenceImage);
+  }
+
+  const res = await fetch(`${API_BASE}/api/refine`, {
+    method: "POST",
+    body: form,
+  });
+
+  return _handleResponse<RefineResult>(res);
 }

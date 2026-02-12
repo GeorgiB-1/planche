@@ -11,7 +11,7 @@ from pydantic import BaseModel, field_validator
 from src.config import ROOM_FURNITURE_REQUIREMENTS
 from src.models.design import DesignResult, MatchResult
 from src.models.room import RoomAnalysis
-from src.services.generator import generate_room_design, swap_product_in_design
+from src.services.generator import generate_room_design, refine_design_render, swap_product_in_design
 from src.services.matcher import match_furniture_for_room
 from src.services.room_analyzer import analyze_room
 from src.storage.r2_client import get_image_url
@@ -204,6 +204,64 @@ async def furnish_room(
         ) from exc
 
     return design_result
+
+
+# ---------------------------------------------------------------------------
+# POST /api/refine
+# ---------------------------------------------------------------------------
+
+@router.post("/refine")
+async def refine_design(
+    design_id: str = Form(...),
+    instruction: str = Form(""),
+    reference_image: UploadFile | None = File(None),
+) -> dict:
+    """Refine an existing design render with a natural language instruction
+    and/or a reference image."""
+
+    # Validate: at least one of instruction or reference_image must be provided
+    has_instruction = bool(instruction and instruction.strip())
+    has_image = reference_image is not None and reference_image.filename
+
+    if not has_instruction and not has_image:
+        raise HTTPException(
+            status_code=400,
+            detail="Моля, въведете инструкция или прикачете референтно изображение.",
+        )
+
+    # Read reference image bytes if provided
+    ref_bytes: bytes | None = None
+    ref_mime: str | None = None
+    if has_image:
+        ref_mime = reference_image.content_type or ""
+        if ref_mime not in ALLOWED_IMAGE_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail="Невалиден формат на референтно изображение. Използвайте JPEG, PNG или WebP.",
+            )
+        ref_bytes = await reference_image.read()
+        if len(ref_bytes) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail="Референтното изображение е прекалено голямо. Максимален размер: 10MB.",
+            )
+
+    try:
+        result = await refine_design_render(
+            design_id=design_id,
+            instruction=instruction,
+            reference_image_bytes=ref_bytes,
+            reference_image_mime=ref_mime,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Грешка при промяна на дизайна: {exc}",
+        ) from exc
+
+    return result
 
 
 # ---------------------------------------------------------------------------

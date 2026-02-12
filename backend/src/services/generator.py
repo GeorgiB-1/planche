@@ -51,12 +51,17 @@ def _mime_to_ext(mime_type: str) -> str:
     return ".webp"
 
 
-def _build_product_text(product: ProductImageForRender, index: int) -> str:
+def _build_product_text(
+    product: ProductImageForRender,
+    index: int,
+    zone_hint: str | None = None,
+) -> str:
     """Build the descriptive text block for a single product."""
-    lines: list[str] = [f"Product {index + 1} — Slot: {product.slot}"]
+    slot_label = product.slot.replace("_", " ").title()
+    lines: list[str] = [f"PRODUCT {index + 1} — {slot_label}"]
 
     if product.visual_description:
-        lines.append(f"  Description: {product.visual_description}")
+        lines.append(f"  Visual appearance: {product.visual_description}")
 
     dims: list[str] = []
     if product.width_cm is not None:
@@ -66,16 +71,90 @@ def _build_product_text(product: ProductImageForRender, index: int) -> str:
     if product.depth_cm is not None:
         dims.append(f"D {product.depth_cm} cm")
     if dims:
-        lines.append(f"  Dimensions: {', '.join(dims)}")
+        lines.append(f"  Real-world dimensions: {', '.join(dims)}")
 
     if product.color:
         lines.append(f"  Color: {product.color}")
     if product.primary_material:
         lines.append(f"  Material: {product.primary_material}")
 
-    lines.append(f"  Place this product in the room in the '{product.slot}' position.")
+    placement = f"  Placement: use this EXACT product for the '{slot_label}' slot in the room."
+    if zone_hint:
+        placement += f" Position it {zone_hint}."
+    lines.append(placement)
 
     return "\n".join(lines)
+
+
+def _build_room_context(room_data: dict[str, Any]) -> str:
+    """Build a textual description of the room from the analysis data."""
+    room_type = room_data.get("type", "room").replace("_", " ")
+    width_cm = room_data.get("estimated_width_cm", 0)
+    depth_cm = room_data.get("estimated_depth_cm", 0)
+    area_sqm = room_data.get("estimated_area_sqm", 0)
+
+    lines: list[str] = [f"Room type: {room_type}"]
+
+    if width_cm and depth_cm:
+        lines.append(
+            f"Dimensions: {width_cm / 100:.1f} m wide x {depth_cm / 100:.1f} m deep"
+            f" ({area_sqm:.1f} sqm)"
+        )
+
+    # Windows
+    features = room_data.get("features", {})
+    windows = features.get("windows", [])
+    if windows:
+        win_descs = []
+        for w in windows:
+            desc = f"{w.get('wall', '?')} wall"
+            if w.get("width_cm"):
+                desc += f" ({w['width_cm']:.0f} cm wide)"
+            win_descs.append(desc)
+        lines.append(f"Windows: {', '.join(win_descs)}")
+
+    # Doors
+    doors = features.get("doors", [])
+    if doors:
+        door_descs = []
+        for d in doors:
+            desc = f"{d.get('wall', '?')} wall"
+            if d.get("type"):
+                desc += f" ({d['type']})"
+            door_descs.append(desc)
+        lines.append(f"Doors: {', '.join(door_descs)}")
+
+    if features.get("balcony_access"):
+        lines.append("Has balcony access")
+    if features.get("fireplace"):
+        lines.append("Has fireplace")
+
+    # Furniture zones
+    zones = room_data.get("furniture_zones", [])
+    if zones:
+        zone_descs = []
+        for z in zones:
+            zone_descs.append(f"{z.get('zone', '?')} ({z.get('position', '?')})")
+        lines.append(f"Furniture zones: {', '.join(zone_descs)}")
+
+    return "\n".join(lines)
+
+
+def _find_zone_hint(slot: str, room_data: dict[str, Any]) -> str | None:
+    """Try to find a placement hint for a product slot from furniture zones."""
+    zones = room_data.get("furniture_zones", [])
+    slot_lower = slot.lower().replace("_", " ")
+    for z in zones:
+        zone_name = (z.get("zone") or "").lower().replace("_", " ")
+        if slot_lower in zone_name or zone_name in slot_lower:
+            return z.get("position")
+    # Check usable walls
+    walls = room_data.get("usable_walls", [])
+    for w in walls:
+        suitable = [s.lower() for s in (w.get("suitable_for") or [])]
+        if slot_lower in suitable or any(slot_lower in s for s in suitable):
+            return f"against the {w.get('wall', '')} wall"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -165,16 +244,27 @@ async def generate_room_design(
         )
     )
 
-    # Part 2 — text intro
-    parts.append(
-        genai_types.Part(
-            text=(
-                "You are an expert interior designer. Below is a rough floor "
-                "plan sketch of a room. Generate a PHOTOREALISTIC render of "
-                "this room furnished with the REAL products shown below."
-            )
-        )
+    # Part 2 — room context + sketch instructions
+    room_type_label = room_data.get("type", "room").replace("_", " ")
+    room_context = _build_room_context(room_data)
+    product_count = len(products)
+
+    intro_text = (
+        f"You are an expert interior designer and photorealistic renderer.\n\n"
+        f"ABOVE IMAGE: A hand-drawn interior design sketch of a "
+        f"{room_type_label}.\n\n"
+        f"ROOM ANALYSIS:\n{room_context}\n\n"
+        f"YOUR TASK: Generate a PHOTOREALISTIC render that FAITHFULLY "
+        f"reproduces the EXACT layout, furniture placement, camera angle, "
+        f"and proportions shown in the sketch.\n\n"
+        f"CRITICAL: You MUST use the {product_count} REAL product(s) shown "
+        f"below as the actual furniture in the render. Match each product's "
+        f"appearance, color, material, and proportions as closely as possible. "
+        f"Place each product in the position indicated by its slot assignment "
+        f"and the sketch layout.\n\n"
+        f"The following are the REAL products to incorporate:"
     )
+    parts.append(genai_types.Part(text=intro_text))
 
     # Parts 3+ — product images + descriptions
     for idx, product in enumerate(products):
@@ -200,27 +290,38 @@ async def generate_room_design(
                 f"Skipping image, keeping text description."
             )
 
-        # Descriptive text for this product
+        # Descriptive text for this product with zone placement hints
+        zone_hint = _find_zone_hint(product.slot, room_data)
         parts.append(
-            genai_types.Part(text=_build_product_text(product, idx))
+            genai_types.Part(
+                text=_build_product_text(product, idx, zone_hint=zone_hint)
+            )
         )
 
     # Final part — rendering instructions
-    room_dims = room_data.get("dimensions", {})
-    room_width = room_dims.get("width_m", "unknown")
-    room_length = room_dims.get("length_m", "unknown")
-    room_height = room_dims.get("height_m", "unknown")
+    style_label = style.replace("_", " ").title() if style else "not specified"
 
     rendering_instructions = (
-        f"Room dimensions: {room_width} m (W) x {room_length} m (L) x {room_height} m (H)\n"
-        f"Style: {style or 'not specified'}, Tier: {tier}\n"
-        "\n"
-        "Create a photorealistic interior render showing all the furniture "
-        "products naturally placed in the room.\n"
-        "Match the products' actual appearance, colors, and proportions as "
-        "closely as possible.\n"
-        "Use warm, natural lighting. Show the room from a wide-angle perspective.\n"
-        "Do NOT add any text, labels, or watermarks to the image."
+        f"\n--- RENDERING INSTRUCTIONS ---\n\n"
+        f"Style: {style_label} | Quality tier: {tier}\n\n"
+        f"1. LAYOUT FIDELITY: Reproduce the sketch's exact room layout — "
+        f"same camera angle, same perspective, same wall positions, same "
+        f"proportions. The sketch is your primary spatial reference.\n\n"
+        f"2. PRODUCT FIDELITY: Each product image above shows a REAL "
+        f"furniture item. Render each one faithfully — same shape, color, "
+        f"material, and texture. Do NOT substitute with generic furniture. "
+        f"Scale each product correctly using its real-world dimensions.\n\n"
+        f"3. PLACEMENT: Position the products in their designated slots as "
+        f"shown in the sketch layout. Respect the room's usable walls and "
+        f"furniture zones.\n\n"
+        f"4. ENVIRONMENT: Use warm, natural lighting. Add realistic "
+        f"architectural details (flooring, wall finish, ceiling) that match "
+        f"the {style_label} style. Keep the room feeling cohesive.\n\n"
+        f"5. QUALITY: Photorealistic quality — real materials, natural "
+        f"shadows, accurate reflections. Wide-angle perspective.\n\n"
+        f"6. RESTRICTIONS: Do NOT add any text, labels, dimensions, "
+        f"watermarks, or annotations. Do NOT change the room type or "
+        f"fundamental layout from the sketch."
     )
     parts.append(genai_types.Part(text=rendering_instructions))
 
@@ -249,7 +350,13 @@ async def generate_room_design(
         for part in response.candidates[0].content.parts:
             if part.inline_data is not None:
                 render_mime = part.inline_data.mime_type or "image/webp"
-                render_bytes = base64.b64decode(part.inline_data.data)
+                raw_data = part.inline_data.data
+                # google-genai SDK returns raw bytes; fall back to b64 decode
+                # only if the response is a string (older SDK versions).
+                if isinstance(raw_data, bytes):
+                    render_bytes = raw_data
+                else:
+                    render_bytes = base64.b64decode(raw_data)
                 break
 
     if render_bytes is None:
@@ -301,6 +408,161 @@ async def generate_room_design(
         budget_spent=budget_spent,
         budget_remaining=budget_remaining,
     )
+
+
+# ---------------------------------------------------------------------------
+# Iterative Refinement
+# ---------------------------------------------------------------------------
+
+async def refine_design_render(
+    design_id: str,
+    instruction: str,
+    reference_image_bytes: bytes | None = None,
+    reference_image_mime: str | None = None,
+) -> dict:
+    """Refine an existing design render based on user instruction.
+
+    Sends the current render + optional reference image + user text to Gemini
+    for a targeted edit. Uploads the new render as a new version.
+
+    Returns a dict compatible with RefineResult.
+    """
+
+    # 1. Load existing design
+    design = get_design(design_id)
+    if design is None:
+        raise ValueError(f"Design '{design_id}' not found.")
+
+    # 2. Fetch current render from R2
+    current_render_key = design["render_r2_key"]
+    current_render_bytes = get_r2_image_bytes(current_render_key)
+    current_render_resized = resize_for_prompt(current_render_bytes, max_size=512)
+    current_render_url = get_image_url(current_render_key)
+    print(f"[refine] Fetched current render: {current_render_key}")
+
+    # 3. Determine current version
+    try:
+        version_str = current_render_key.rsplit("_v", 1)[-1].replace(".webp", "")
+        current_version = int(version_str)
+    except (ValueError, IndexError):
+        current_version = 1
+
+    # 4. Build multimodal prompt
+    parts: list[genai_types.Part] = []
+
+    # Part 1 — current render image
+    render_b64 = base64.b64encode(current_render_resized).decode("utf-8")
+    parts.append(
+        genai_types.Part(
+            inline_data=genai_types.Blob(
+                mime_type="image/webp",
+                data=render_b64,
+            )
+        )
+    )
+
+    # Part 2 — system preamble
+    parts.append(
+        genai_types.Part(
+            text=(
+                "You are performing a TARGETED EDIT on the room render above. "
+                "Change ONLY what is requested. Keep everything else "
+                "PIXEL-PERFECT IDENTICAL — same camera angle, lighting, "
+                "other furniture, walls, floor."
+            )
+        )
+    )
+
+    # Part 3 — reference image (optional)
+    if reference_image_bytes is not None:
+        ref_resized = resize_for_prompt(reference_image_bytes, max_size=512)
+        ref_b64 = base64.b64encode(ref_resized).decode("utf-8")
+        ref_mime = reference_image_mime or "image/webp"
+        parts.append(
+            genai_types.Part(
+                inline_data=genai_types.Blob(
+                    mime_type=ref_mime,
+                    data=ref_b64,
+                )
+            )
+        )
+        # Part 4 — reference context
+        parts.append(
+            genai_types.Part(
+                text="Match the appearance of the item in the reference image above."
+            )
+        )
+
+    # Part 5 — user instruction
+    if instruction.strip():
+        parts.append(
+            genai_types.Part(text=f"EDIT INSTRUCTION: {instruction}")
+        )
+    elif reference_image_bytes is not None:
+        parts.append(
+            genai_types.Part(
+                text="EDIT INSTRUCTION: Replace the most similar item with the reference image."
+            )
+        )
+
+    # Part 6 — constraints
+    parts.append(
+        genai_types.Part(
+            text=(
+                "Generate ONE photorealistic image. Do NOT add text, labels, "
+                "or watermarks. Do NOT change room type or camera angle."
+            )
+        )
+    )
+
+    # 5. Call Gemini
+    print(f"[refine] Generating refined render for design {design_id}...")
+
+    config = genai_types.GenerateContentConfig(
+        response_modalities=["IMAGE", "TEXT"],
+    )
+
+    response = _gemini_client.models.generate_content(
+        model=_IMAGE_MODEL,
+        contents=genai_types.Content(parts=parts),
+        config=config,
+    )
+
+    # 6. Extract generated image
+    render_bytes: bytes | None = None
+    if response.candidates:
+        for part in response.candidates[0].content.parts:
+            if part.inline_data is not None:
+                raw_data = part.inline_data.data
+                if isinstance(raw_data, bytes):
+                    render_bytes = raw_data
+                else:
+                    render_bytes = base64.b64decode(raw_data)
+                break
+
+    if render_bytes is None:
+        raise RuntimeError(
+            "Gemini не генерира изображение. Моля, опитайте с различна инструкция."
+        )
+
+    # 7. Upload new render to R2
+    new_version = current_version + 1
+    new_render_key = f"renders/{design_id}/render_v{new_version}.webp"
+    new_render_url = upload_image(render_bytes, new_render_key, content_type="image/webp")
+    print(f"[refine] New render uploaded to R2: {new_render_key}")
+
+    # 8. Update design in Supabase
+    update_design(design_id, {"render_r2_key": new_render_key})
+    print(f"[refine] Design {design_id} updated with version {new_version}")
+
+    # 9. Return RefineResult-compatible dict
+    return {
+        "design_id": design_id,
+        "render_url": new_render_url,
+        "version": new_version,
+        "refinement_description": instruction or None,
+        "previous_render_url": current_render_url,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +700,11 @@ def swap_product_in_design(
     if response.candidates:
         for part in response.candidates[0].content.parts:
             if part.inline_data is not None:
-                render_bytes = base64.b64decode(part.inline_data.data)
+                raw_data = part.inline_data.data
+                if isinstance(raw_data, bytes):
+                    render_bytes = raw_data
+                else:
+                    render_bytes = base64.b64decode(raw_data)
                 break
 
     if render_bytes is None:

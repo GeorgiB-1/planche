@@ -7,6 +7,11 @@ interface ProductListProps {
   onSwap?: (slot: string) => void;
 }
 
+/** Derive a slot identifier from a product name (e.g. "Coffee Table" -> "coffee_table"). */
+function toSlot(name: string): string {
+  return name.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+}
+
 function ProductList({ products, onSwap }: ProductListProps) {
   if (products.length === 0) {
     return (
@@ -49,7 +54,7 @@ function ProductList({ products, onSwap }: ProductListProps) {
               widthCm={null}
               heightCm={null}
               depthCm={null}
-              slot={product.name}
+              slot={toSlot(product.name)}
               onSwap={onSwap}
             />
           </div>
