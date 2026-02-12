@@ -145,20 +145,24 @@ def query_products(
     if room:
         query = query.eq("room_type", room)
 
-    if style:
-        query = query.eq("style", style)
+    # Style is used as a preference in ranking, not a hard filter,
+    # so we don't filter by style here — the matcher's rank_candidates
+    # will score style matches higher.
 
     if min_price is not None:
-        query = query.gte("price", min_price)
+        # Include products with null prices (inquiry-based catalogs)
+        query = query.or_(f"price.gte.{min_price},price.is.null")
 
     if max_price is not None:
-        query = query.lte("price", max_price)
+        # Include products with null prices (inquiry-based catalogs)
+        query = query.or_(f"price.lte.{max_price},price.is.null")
 
     if max_width is not None:
-        query = query.lte("width_cm", max_width)
+        # Include products with null dimensions (not yet measured)
+        query = query.or_(f"width_cm.lte.{max_width},width_cm.is.null")
 
-    if preferred_sources:
-        query = query.in_("source_domain", preferred_sources)
+    # preferred_sources is used as a ranking signal in the matcher,
+    # not a hard filter — we want to return products from all sources.
 
     if require_usable_image:
         query = query.eq("image_usable", True)

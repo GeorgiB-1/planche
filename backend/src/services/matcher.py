@@ -164,12 +164,63 @@ def match_furniture_for_room(
     room_type: str = room.get("type", "living_room")
 
     # -- Furniture requirements ------------------------------------------------
+    # If the room analysis detected specific furniture zones from the sketch,
+    # use ONLY those zones instead of the static config.  This ensures we
+    # only match products for furniture that is actually drawn in the sketch.
     requirements = ROOM_FURNITURE_REQUIREMENTS.get(
         room_type,
         ROOM_FURNITURE_REQUIREMENTS.get("living_room", {}),
     )
-    required_slots: list[dict] = requirements.get("required", [])
-    optional_slots: list[dict] = requirements.get("optional", [])
+
+    detected_zones: list[dict] = room.get("furniture_zones", [])
+
+    if detected_zones:
+        # Build a set of detected zone names (normalised to lowercase)
+        detected_names: set[str] = set()
+        for z in detected_zones:
+            zone_name = (z.get("zone") or "").lower().replace(" ", "_")
+            detected_names.add(zone_name)
+        print(f"[matcher] Sketch-detected zones: {detected_names}")
+
+        # Filter the static slot lists to only include slots whose name
+        # appears (even partially) in one of the detected zone names.
+        def _slot_is_detected(slot_def: dict) -> bool:
+            slot_name = slot_def.get("slot", "").lower()
+            for detected in detected_names:
+                if slot_name in detected or detected in slot_name:
+                    return True
+            return False
+
+        all_required: list[dict] = requirements.get("required", [])
+        all_optional: list[dict] = requirements.get("optional", [])
+
+        required_slots = [s for s in all_required if _slot_is_detected(s)]
+        optional_slots = [s for s in all_optional if _slot_is_detected(s)]
+
+        # If the zone detection didn't match any config slots, add them
+        # as generic slots so we still try to find products for them.
+        matched_slot_names = {s["slot"] for s in required_slots + optional_slots}
+        all_config_slots = {s["slot"]: s for s in all_required + all_optional}
+
+        for zone_name in detected_names:
+            # Check if already matched
+            if any(zone_name in ms or ms in zone_name for ms in matched_slot_names):
+                continue
+            # Check if there's a config slot that partially matches
+            for cfg_name, cfg_slot in all_config_slots.items():
+                if zone_name in cfg_name or cfg_name in zone_name:
+                    optional_slots.append(cfg_slot)
+                    matched_slot_names.add(cfg_name)
+                    break
+
+        print(
+            f"[matcher] Filtered to {len(required_slots)} required + "
+            f"{len(optional_slots)} optional slots based on sketch zones"
+        )
+    else:
+        # No furniture zones detected — fall back to full static config
+        required_slots = requirements.get("required", [])
+        optional_slots = requirements.get("optional", [])
 
     # -- Budget allocation percentages ----------------------------------------
     allocation = ROOM_BUDGET_ALLOCATION.get(room_type)

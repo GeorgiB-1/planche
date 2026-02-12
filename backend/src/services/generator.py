@@ -332,6 +332,10 @@ async def generate_room_design(
 
     config = genai_types.GenerateContentConfig(
         response_modalities=["IMAGE", "TEXT"],
+        image_config=genai_types.ImageConfig(
+            aspect_ratio="16:9",
+            image_size="2K",
+        ),
     )
 
     response = _gemini_client.models.generate_content(
@@ -520,6 +524,10 @@ async def refine_design_render(
 
     config = genai_types.GenerateContentConfig(
         response_modalities=["IMAGE", "TEXT"],
+        image_config=genai_types.ImageConfig(
+            aspect_ratio="16:9",
+            image_size="2K",
+        ),
     )
 
     response = _gemini_client.models.generate_content(
@@ -684,6 +692,10 @@ def swap_product_in_design(
 
     config = genai_types.GenerateContentConfig(
         response_modalities=["IMAGE", "TEXT"],
+        image_config=genai_types.ImageConfig(
+            aspect_ratio="16:9",
+            image_size="2K",
+        ),
     )
 
     response = _gemini_client.models.generate_content(

@@ -75,12 +75,13 @@ export default function HomePage() {
       setError(null);
 
       try {
+        // Don't pass roomType as room_id — the backend assigns its own
+        // room IDs during analysis (e.g. "room_1"). Let it pick the first.
         const result: DesignResult = await furnishRoom(
           selectedFile,
           config.budget,
           config.tier,
           config.style,
-          config.roomType,
         );
 
         setDesignId(result.design_id);

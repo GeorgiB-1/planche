@@ -86,15 +86,15 @@ const TIER_OPTIONS: TierOption[] = [
   },
 ];
 
-const ESTIMATED_ROOM_SQM = 20;
+const DEFAULT_ROOM_SQM = 20;
 
 /**
  * Compute the default budget for a tier based on the midpoint of its
- * per-square-metre range multiplied by an estimated room size of 20 m².
+ * per-square-metre range multiplied by the room area.
  */
-function tierMidpointBudget(tier: TierOption): number {
+function tierMidpointBudget(tier: TierOption, areaSqm: number): number {
   const midpoint = (tier.perSqmMin + tier.perSqmMax) / 2;
-  return Math.round(midpoint * ESTIMATED_ROOM_SQM);
+  return Math.round(midpoint * areaSqm);
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +113,7 @@ export default function ConfigPanel({
   );
   const [selectedStyle, setSelectedStyle] = useState<string>("modern");
   const [selectedTier, setSelectedTier] = useState<string>("standard");
+  const [roomAreaSqm, setRoomAreaSqm] = useState<number>(DEFAULT_ROOM_SQM);
   const [customBudget, setCustomBudget] = useState<number>(2000);
 
   // Sync room type when the parent passes a new detection result
@@ -122,13 +123,13 @@ export default function ConfigPanel({
     }
   }, [detectedRoomType]);
 
-  // Recalculate budget when tier changes
+  // Recalculate budget when tier or room area changes
   useEffect(() => {
     const tier = TIER_OPTIONS.find((t) => t.value === selectedTier);
     if (tier) {
-      setCustomBudget(tierMidpointBudget(tier));
+      setCustomBudget(tierMidpointBudget(tier, roomAreaSqm));
     }
-  }, [selectedTier]);
+  }, [selectedTier, roomAreaSqm]);
 
   // ---- Handlers ------------------------------------------------------------
 
@@ -184,6 +185,38 @@ export default function ConfigPanel({
             </option>
           ))}
         </select>
+      </section>
+
+      {/* ------------------------------------------------------------------ */}
+      {/* Room Area                                                            */}
+      {/* ------------------------------------------------------------------ */}
+      <section>
+        <label
+          htmlFor="room-area"
+          className="text-sm font-medium text-gray-700 mb-2 block"
+        >
+          Площ на стаята
+        </label>
+        <div className="relative">
+          <input
+            id="room-area"
+            type="number"
+            min={5}
+            max={200}
+            value={roomAreaSqm}
+            onChange={(e) => {
+              const parsed = parseInt(e.target.value, 10);
+              setRoomAreaSqm(Number.isNaN(parsed) ? 0 : parsed);
+            }}
+            className="w-full border border-gray-300 rounded-lg px-3 pr-12 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+          />
+          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">
+            m&sup2;
+          </span>
+        </div>
+        <p className="text-xs text-gray-400 mt-1">
+          Приблизителна площ: 5 &ndash; 200 m&sup2;
+        </p>
       </section>
 
       {/* ------------------------------------------------------------------ */}
@@ -266,6 +299,9 @@ export default function ConfigPanel({
           className="text-sm font-medium text-gray-700 mb-2 block"
         >
           Бюджет
+          <span className="ml-2 text-xs text-gray-400 font-normal">
+            (изчислен за {roomAreaSqm} m&sup2;)
+          </span>
         </label>
         <div className="relative">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm pointer-events-none">

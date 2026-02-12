@@ -45,3 +45,11 @@ _debug_*.json
 
 # Sensitive files
 Info + pass.txt
+
+# Test artifacts
+Sketch Image Examples/
+test_render.webp
+backend/test_render_pipeline.py
+
+# TypeScript build info
+frontend/tsconfig.tsbuildinfo
