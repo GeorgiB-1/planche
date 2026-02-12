@@ -478,6 +478,7 @@ async def generate_room_design(
         "id": design_id,
         "sketch_r2_key": sketch_r2_key,
         "room_analysis": room_data,
+        "scene_description": scene_description,
         "tier": tier,
         "style": style,
         "budget_eur": budget_spent + budget_remaining,
