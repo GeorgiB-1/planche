@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Node.js
+node_modules/
+.next/
+out/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+*.tmp
+*.log
+nul
+
+# Debug files
+_debug_*.json
+
+# Firecrawl cache
+.firecrawl/
+
+# Agent/tool artifacts
+.agent/
+.agents/
+
+# Sensitive files
+Info + pass.txt
