@@ -12,15 +12,22 @@ import re
 
 from google import genai
 
-from src.config import GEMINI_API_KEY, ROOM_ANALYSIS_PROMPT
+from src.config import GEMINI_API_KEY, ROOM_ANALYSIS_PROMPT, SCENE_DESCRIPTION_PROMPT
 from src.models.room import (
+    CameraInfo,
+    CompositionInfo,
     DoorFeature,
     FurnitureZone,
     Room,
     RoomAnalysis,
     RoomAnalysisOverall,
     RoomFeatures,
+    SceneDescription,
+    SpatialObject,
+    SpatialRelationship,
     UsableWall,
+    VisibleSurfaces,
+    WallSurfaceDetail,
     WindowFeature,
 )
 
@@ -265,7 +272,7 @@ async def analyze_room(
         # Encode image as base64 for inline_data
         b64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-        response = _client.models.generate_content(
+        response = await _client.aio.models.generate_content(
             model=GEMINI_MODEL,
             contents=[
                 {
@@ -313,3 +320,168 @@ async def analyze_room(
     except Exception as exc:
         logger.error("Room analysis failed: %s", exc, exc_info=True)
         return _build_default_analysis()
+
+
+# ---------------------------------------------------------------------------
+# Scene Description helpers
+# ---------------------------------------------------------------------------
+
+def _build_default_scene_description() -> SceneDescription:
+    """Return a sensible default scene description (standing, two-point, room entrance)."""
+    return SceneDescription()
+
+
+def _map_camera(raw: dict) -> CameraInfo:
+    return CameraInfo(
+        perspective_type=raw.get("perspective_type", "two-point"),
+        eye_level=raw.get("eye_level", "standing"),
+        eye_height_estimate=raw.get("eye_height_estimate", "~160 cm"),
+        camera_position=raw.get("camera_position", "room entrance, center"),
+        camera_direction=raw.get("camera_direction", "looking into the room"),
+        horizontal_angle_deg=_safe_float(raw.get("horizontal_angle_deg"), 0.0),
+        vertical_tilt_deg=_safe_float(raw.get("vertical_tilt_deg"), 0.0),
+        fov_estimate=raw.get("fov_estimate", "normal (~60°)"),
+        distance_to_subject=raw.get("distance_to_subject", "medium"),
+    )
+
+
+def _map_visible_surfaces(raw: dict) -> VisibleSurfaces:
+    walls = []
+    for w in raw.get("walls", []):
+        walls.append(
+            WallSurfaceDetail(
+                wall_id=w.get("wall_id", "unknown"),
+                coverage_pct=_safe_float(w.get("coverage_pct"), 0.0),
+                features=w.get("features", []),
+            )
+        )
+    return VisibleSurfaces(
+        floor_visible=raw.get("floor_visible", True),
+        floor_coverage_pct=_safe_float(raw.get("floor_coverage_pct"), 50.0),
+        ceiling_visible=raw.get("ceiling_visible", False),
+        ceiling_coverage_pct=_safe_float(raw.get("ceiling_coverage_pct"), 0.0),
+        walls=walls,
+    )
+
+
+def _map_objects(raw_list: list[dict]) -> list[SpatialObject]:
+    objects = []
+    for obj in raw_list:
+        objects.append(
+            SpatialObject(
+                name=obj.get("name", "unknown"),
+                depth_zone=obj.get("depth_zone", "midground"),
+                horizontal_position=obj.get("horizontal_position", "center"),
+                vertical_position=obj.get("vertical_position", "middle"),
+                size_in_frame=obj.get("size_in_frame", "medium"),
+                occluded_by=obj.get("occluded_by"),
+            )
+        )
+    return objects
+
+
+def _map_spatial_relationships(raw_list: list[dict]) -> list[SpatialRelationship]:
+    relationships = []
+    for rel in raw_list:
+        if "object_a" in rel and "object_b" in rel and "relationship" in rel:
+            relationships.append(
+                SpatialRelationship(
+                    object_a=rel["object_a"],
+                    object_b=rel["object_b"],
+                    relationship=rel["relationship"],
+                )
+            )
+    return relationships
+
+
+def _map_composition(raw: dict) -> CompositionInfo:
+    return CompositionInfo(
+        dominant_lines=raw.get("dominant_lines", []),
+        focal_point=raw.get("focal_point", "center of room"),
+        visual_weight=raw.get("visual_weight", "balanced"),
+        depth_cues=raw.get("depth_cues", []),
+        balance=raw.get("balance", "symmetric"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Public API — Scene Description
+# ---------------------------------------------------------------------------
+
+async def describe_scene(
+    image_bytes: bytes,
+    mime_type: str = "image/jpeg",
+) -> SceneDescription:
+    """Analyse a sketch image for camera viewpoint and spatial composition.
+
+    Parameters
+    ----------
+    image_bytes:
+        Raw bytes of the uploaded image.
+    mime_type:
+        MIME type of the image.
+
+    Returns
+    -------
+    SceneDescription
+        Validated model containing camera, surfaces, objects, composition data.
+    """
+    try:
+        b64_image = base64.b64encode(image_bytes).decode("utf-8")
+
+        response = await _client.aio.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[
+                {
+                    "parts": [
+                        {
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": b64_image,
+                            }
+                        },
+                        {
+                            "text": SCENE_DESCRIPTION_PROMPT,
+                        },
+                    ],
+                }
+            ],
+        )
+
+        raw_text = response.text
+        if not raw_text:
+            logger.warning("Gemini returned empty scene description; using defaults.")
+            return _build_default_scene_description()
+
+        parsed = _parse_gemini_json(raw_text)
+
+        camera = _map_camera(parsed.get("camera", {}))
+        visible_surfaces = _map_visible_surfaces(parsed.get("visible_surfaces", {}))
+        objects = _map_objects(parsed.get("objects", []))
+        spatial_relationships = _map_spatial_relationships(
+            parsed.get("spatial_relationships", [])
+        )
+        composition = _map_composition(parsed.get("composition", {}))
+
+        return SceneDescription(
+            camera=camera,
+            visible_surfaces=visible_surfaces,
+            objects=objects,
+            spatial_relationships=spatial_relationships,
+            composition=composition,
+            natural_language_summary=parsed.get(
+                "natural_language_summary",
+                SceneDescription().natural_language_summary,
+            ),
+            generation_directive=parsed.get(
+                "generation_directive",
+                SceneDescription().generation_directive,
+            ),
+        )
+
+    except json.JSONDecodeError as exc:
+        logger.error("Failed to parse scene description JSON: %s", exc)
+        return _build_default_scene_description()
+    except Exception as exc:
+        logger.error("Scene description failed: %s", exc, exc_info=True)
+        return _build_default_scene_description()

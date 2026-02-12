@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS designs (
     -- Input
     sketch_r2_key TEXT,
     room_analysis JSONB,
+    scene_description JSONB,
     tier TEXT,
     style TEXT,
     budget_eur DECIMAL(10,2),

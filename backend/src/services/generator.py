@@ -140,6 +140,70 @@ def _build_room_context(room_data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _build_scene_context(scene_data: dict[str, Any] | None) -> str:
+    """Format scene description data into structured text for the prompt."""
+    if not scene_data:
+        return ""
+
+    lines: list[str] = []
+
+    # Camera info
+    cam = scene_data.get("camera", {})
+    if cam:
+        lines.append("CAMERA:")
+        lines.append(f"  Perspective: {cam.get('perspective_type', 'two-point')}")
+        lines.append(f"  Eye level: {cam.get('eye_level', 'standing')} ({cam.get('eye_height_estimate', '~160 cm')})")
+        lines.append(f"  Position: {cam.get('camera_position', 'room entrance')}")
+        lines.append(f"  Direction: {cam.get('camera_direction', 'looking into room')}")
+        h_angle = cam.get("horizontal_angle_deg", 0)
+        v_tilt = cam.get("vertical_tilt_deg", 0)
+        lines.append(f"  Horizontal angle: {h_angle}° | Vertical tilt: {v_tilt}°")
+        lines.append(f"  FOV: {cam.get('fov_estimate', 'normal (~60°)')}")
+        lines.append(f"  Distance: {cam.get('distance_to_subject', 'medium')}")
+
+    # Visible surfaces
+    surfaces = scene_data.get("visible_surfaces", {})
+    if surfaces:
+        lines.append("VISIBLE SURFACES:")
+        if surfaces.get("floor_visible"):
+            lines.append(f"  Floor: {surfaces.get('floor_coverage_pct', 0):.0f}% visible")
+        if surfaces.get("ceiling_visible"):
+            lines.append(f"  Ceiling: {surfaces.get('ceiling_coverage_pct', 0):.0f}% visible")
+        for wall in surfaces.get("walls", []):
+            feats = ", ".join(wall.get("features", []))
+            feat_str = f" [{feats}]" if feats else ""
+            lines.append(f"  {wall.get('wall_id', 'wall')}: {wall.get('coverage_pct', 0):.0f}%{feat_str}")
+
+    # Objects
+    objects = scene_data.get("objects", [])
+    if objects:
+        obj_parts = []
+        for obj in objects:
+            obj_parts.append(
+                f"{obj.get('name', '?')} [{obj.get('depth_zone', '?')}, "
+                f"{obj.get('horizontal_position', '?')}]"
+            )
+        lines.append(f"OBJECTS IN SCENE: {'; '.join(obj_parts)}")
+
+    # Spatial relationships (cap at 10)
+    rels = scene_data.get("spatial_relationships", [])[:10]
+    if rels:
+        rel_parts = []
+        for r in rels:
+            rel_parts.append(
+                f"{r.get('object_a', '?')} {r.get('relationship', '?')} {r.get('object_b', '?')}"
+            )
+        lines.append(f"KEY SPATIAL RELATIONSHIPS: {'; '.join(rel_parts)}")
+
+    # Generation directive — most critical
+    directive = scene_data.get("generation_directive", "")
+    if directive:
+        lines.append("")
+        lines.append(f"*** CAMERA DIRECTIVE: {directive} ***")
+
+    return "\n".join(lines)
+
+
 def _find_zone_hint(slot: str, room_data: dict[str, Any]) -> str | None:
     """Try to find a placement hint for a product slot from furniture zones."""
     zones = room_data.get("furniture_zones", [])
@@ -171,6 +235,7 @@ async def generate_room_design(
     tier: str,
     budget_spent: float,
     budget_remaining: float,
+    scene_description: dict[str, Any] | None = None,
 ) -> DesignResult:
     """Generate a photorealistic room render and persist the result.
 
@@ -249,11 +314,18 @@ async def generate_room_design(
     room_context = _build_room_context(room_data)
     product_count = len(products)
 
+    scene_context = _build_scene_context(scene_description)
+
+    scene_section = ""
+    if scene_context:
+        scene_section = f"SCENE & CAMERA ANALYSIS:\n{scene_context}\n\n"
+
     intro_text = (
         f"You are an expert interior designer and photorealistic renderer.\n\n"
         f"ABOVE IMAGE: A hand-drawn interior design sketch of a "
         f"{room_type_label}.\n\n"
         f"ROOM ANALYSIS:\n{room_context}\n\n"
+        f"{scene_section}"
         f"YOUR TASK: Generate a PHOTOREALISTIC render that FAITHFULLY "
         f"reproduces the EXACT layout, furniture placement, camera angle, "
         f"and proportions shown in the sketch.\n\n"
@@ -301,25 +373,48 @@ async def generate_room_design(
     # Final part — rendering instructions
     style_label = style.replace("_", " ").title() if style else "not specified"
 
+    # Build camera directive from scene description if available
+    camera_directive = ""
+    if scene_description:
+        directive = scene_description.get("generation_directive", "")
+        if directive:
+            camera_directive = directive
+
+    camera_instruction = (
+        f"1. CAMERA & PERSPECTIVE FIDELITY (MOST IMPORTANT): "
+    )
+    if camera_directive:
+        camera_instruction += (
+            f"{camera_directive} "
+            f"This is the MOST CRITICAL instruction — the rendered viewpoint "
+            f"MUST match the sketch's camera angle exactly."
+        )
+    else:
+        camera_instruction += (
+            f"Reproduce the sketch's exact camera angle and perspective. "
+            f"The rendered viewpoint MUST match the sketch."
+        )
+
     rendering_instructions = (
         f"\n--- RENDERING INSTRUCTIONS ---\n\n"
         f"Style: {style_label} | Quality tier: {tier}\n\n"
-        f"1. LAYOUT FIDELITY: Reproduce the sketch's exact room layout — "
-        f"same camera angle, same perspective, same wall positions, same "
-        f"proportions. The sketch is your primary spatial reference.\n\n"
-        f"2. PRODUCT FIDELITY: Each product image above shows a REAL "
+        f"{camera_instruction}\n\n"
+        f"2. LAYOUT FIDELITY: Reproduce the sketch's exact room layout — "
+        f"same wall positions, same proportions. The sketch is your primary "
+        f"spatial reference.\n\n"
+        f"3. PRODUCT FIDELITY: Each product image above shows a REAL "
         f"furniture item. Render each one faithfully — same shape, color, "
         f"material, and texture. Do NOT substitute with generic furniture. "
         f"Scale each product correctly using its real-world dimensions.\n\n"
-        f"3. PLACEMENT: Position the products in their designated slots as "
+        f"4. PLACEMENT: Position the products in their designated slots as "
         f"shown in the sketch layout. Respect the room's usable walls and "
         f"furniture zones.\n\n"
-        f"4. ENVIRONMENT: Use warm, natural lighting. Add realistic "
+        f"5. ENVIRONMENT: Use warm, natural lighting. Add realistic "
         f"architectural details (flooring, wall finish, ceiling) that match "
         f"the {style_label} style. Keep the room feeling cohesive.\n\n"
-        f"5. QUALITY: Photorealistic quality — real materials, natural "
-        f"shadows, accurate reflections. Wide-angle perspective.\n\n"
-        f"6. RESTRICTIONS: Do NOT add any text, labels, dimensions, "
+        f"6. QUALITY: Photorealistic quality — real materials, natural "
+        f"shadows, accurate reflections.\n\n"
+        f"7. RESTRICTIONS: Do NOT add any text, labels, dimensions, "
         f"watermarks, or annotations. Do NOT change the room type or "
         f"fundamental layout from the sketch."
     )
@@ -383,6 +478,7 @@ async def generate_room_design(
         "id": design_id,
         "sketch_r2_key": sketch_r2_key,
         "room_analysis": room_data,
+        "scene_description": scene_description,
         "tier": tier,
         "style": style,
         "budget_eur": budget_spent + budget_remaining,

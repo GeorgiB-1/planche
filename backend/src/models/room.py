@@ -72,3 +72,87 @@ class RoomAnalysis(BaseModel):
 
     rooms: list[Room] = []
     overall: RoomAnalysisOverall = RoomAnalysisOverall()
+
+
+# ---------------------------------------------------------------------------
+# Scene Description models (camera / viewpoint / composition analysis)
+# ---------------------------------------------------------------------------
+
+
+class CameraInfo(BaseModel):
+    """Camera and viewpoint data extracted from a sketch."""
+
+    perspective_type: str = "two-point"
+    eye_level: str = "standing"
+    eye_height_estimate: str = "~160 cm"
+    camera_position: str = "room entrance, center"
+    camera_direction: str = "looking into the room"
+    horizontal_angle_deg: float = 0.0
+    vertical_tilt_deg: float = 0.0
+    fov_estimate: str = "normal (~60°)"
+    distance_to_subject: str = "medium"
+
+
+class WallSurfaceDetail(BaseModel):
+    """Detail about a single visible wall."""
+
+    wall_id: str = "unknown"
+    coverage_pct: float = 0.0
+    features: list[str] = []
+
+
+class VisibleSurfaces(BaseModel):
+    """Which architectural surfaces are visible in the sketch."""
+
+    floor_visible: bool = True
+    floor_coverage_pct: float = 50.0
+    ceiling_visible: bool = False
+    ceiling_coverage_pct: float = 0.0
+    walls: list[WallSurfaceDetail] = []
+
+
+class SpatialObject(BaseModel):
+    """An object/element detected in the sketch with spatial info."""
+
+    name: str
+    depth_zone: str = "midground"
+    horizontal_position: str = "center"
+    vertical_position: str = "middle"
+    size_in_frame: str = "medium"
+    occluded_by: str | None = None
+
+
+class SpatialRelationship(BaseModel):
+    """Spatial relationship between two objects in the scene."""
+
+    object_a: str
+    object_b: str
+    relationship: str  # e.g. "in_front_of", "behind", "to_left_of", etc.
+
+
+class CompositionInfo(BaseModel):
+    """Visual composition data extracted from the sketch."""
+
+    dominant_lines: list[str] = []
+    focal_point: str = "center of room"
+    visual_weight: str = "balanced"
+    depth_cues: list[str] = []
+    balance: str = "symmetric"
+
+
+class SceneDescription(BaseModel):
+    """Top-level container for full scene / camera analysis of a sketch."""
+
+    camera: CameraInfo = CameraInfo()
+    visible_surfaces: VisibleSurfaces = VisibleSurfaces()
+    objects: list[SpatialObject] = []
+    spatial_relationships: list[SpatialRelationship] = []
+    composition: CompositionInfo = CompositionInfo()
+    natural_language_summary: str = (
+        "A standard interior view from a standing position at the room entrance, "
+        "looking into the room with a two-point perspective."
+    )
+    generation_directive: str = (
+        "Render from a standing eye-level viewpoint at the room entrance, "
+        "using two-point perspective with the camera looking straight into the room."
+    )

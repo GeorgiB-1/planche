@@ -424,3 +424,81 @@ Common Bulgarian room labels to handle:
 
 Return ONLY a valid JSON object. No markdown fencing, no extra commentary.
 """
+
+SCENE_DESCRIPTION_PROMPT = """\
+You are an expert cinematographer and spatial analyst. You will receive an \
+image of an interior design sketch, floor plan, or room photograph.
+
+Your task is to analyze the CAMERA VIEWPOINT and SPATIAL COMPOSITION of the \
+scene, NOT the architectural layout. Extract exhaustive data about how the \
+scene is framed, what the camera sees, and how objects are arranged in the \
+frame.
+
+## Extraction rules
+
+1. **camera** — Camera/viewpoint information:
+   - `perspective_type`: "one-point" | "two-point" | "three-point" | \
+"orthographic" | "birds-eye" | "worms-eye" | "isometric"
+   - `eye_level`: "floor" | "seated" | "standing" | "elevated" | "overhead"
+   - `eye_height_estimate`: string estimate (e.g. "~160 cm", "~300 cm")
+   - `camera_position`: natural language description of where the camera is \
+(e.g. "room entrance, slightly left of center", "corner of the room")
+   - `camera_direction`: natural language description of where the camera \
+looks (e.g. "looking toward the far wall", "looking diagonally across the room")
+   - `horizontal_angle_deg`: 0-360 estimate, 0 = facing the primary/far wall
+   - `vertical_tilt_deg`: negative = looking down, 0 = level, positive = up
+   - `fov_estimate`: "narrow (~30°)" | "normal (~60°)" | "wide (~90°)" | \
+"ultra-wide (~120°)"
+   - `distance_to_subject`: "close" | "medium" | "far"
+
+2. **visible_surfaces** — Which architectural surfaces are visible:
+   - `floor_visible`: boolean
+   - `floor_coverage_pct`: 0-100
+   - `ceiling_visible`: boolean
+   - `ceiling_coverage_pct`: 0-100
+   - `walls`: list of objects, each with:
+     - `wall_id`: identifier (e.g. "left_wall", "far_wall", "right_wall")
+     - `coverage_pct`: 0-100 (how much of the frame this wall occupies)
+     - `features`: list of notable features on this wall (e.g. "window", \
+"door", "built-in shelving")
+
+3. **objects** — Every distinct object or element visible in the sketch:
+   - `name`: descriptive name (e.g. "sofa", "coffee_table", "floor_lamp")
+   - `depth_zone`: "foreground" | "midground" | "background"
+   - `horizontal_position`: "far-left" | "center-left" | "center" | \
+"center-right" | "far-right"
+   - `vertical_position`: "top" | "upper-middle" | "middle" | \
+"lower-middle" | "bottom"
+   - `size_in_frame`: "tiny" | "small" | "medium" | "large" | "dominant"
+   - `occluded_by`: name of occluding object or null
+
+4. **spatial_relationships** — All meaningful pairs:
+   - `object_a`: name
+   - `object_b`: name
+   - `relationship`: "in_front_of" | "behind" | "to_left_of" | \
+"to_right_of" | "above" | "below" | "on_top_of" | "next_to" | "inside"
+
+5. **composition** — Visual composition analysis:
+   - `dominant_lines`: list of line descriptions (e.g. "strong diagonal \
+from bottom-left to upper-right", "horizontal ceiling line")
+   - `focal_point`: what draws the eye first
+   - `visual_weight`: "left-heavy" | "right-heavy" | "top-heavy" | \
+"bottom-heavy" | "balanced"
+   - `depth_cues`: list (e.g. "converging lines", "size diminution", \
+"overlapping objects", "atmospheric perspective")
+   - `balance`: "symmetric" | "asymmetric" | "radial"
+
+6. **natural_language_summary** — Write a 5-10 sentence cinematographic \
+description of the scene as if directing a camera operator. Describe the \
+exact viewpoint, what is visible, the depth layers, and the overall \
+composition. Be very specific about angles and positions.
+
+7. **generation_directive** — Write a 2-4 sentence IMPERATIVE instruction \
+that an image generation model MUST follow to reproduce this exact camera \
+angle and composition. Start with "Render from..." and be extremely specific \
+about eye level, camera position, direction, perspective type, and what \
+should be visible in the frame.
+
+Return ONLY a valid JSON object with the fields above. No markdown fencing, \
+no extra commentary.
+"""

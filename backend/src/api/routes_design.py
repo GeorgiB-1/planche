@@ -5,15 +5,17 @@ Handles sketch upload, room analysis, furniture matching, and design generation.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, field_validator
 
 from src.config import ROOM_FURNITURE_REQUIREMENTS
 from src.models.design import DesignResult, MatchResult
-from src.models.room import RoomAnalysis
+from src.models.room import RoomAnalysis, SceneDescription
 from src.services.generator import generate_room_design, refine_design_render, swap_product_in_design
 from src.services.matcher import match_furniture_for_room
-from src.services.room_analyzer import analyze_room
+from src.services.room_analyzer import analyze_room, describe_scene
 from src.storage.r2_client import get_image_url
 from src.storage.supabase_client import get_design, get_product_by_id, query_products
 
@@ -99,12 +101,20 @@ def _get_categories_for_slot(slot: str) -> list[str]:
 # POST /api/analyze
 # ---------------------------------------------------------------------------
 
-@router.post("/analyze", response_model=RoomAnalysis)
-async def analyze_sketch(sketch: UploadFile = File(...)) -> RoomAnalysis:
-    """Upload a sketch and receive structured room analysis."""
+@router.post("/analyze")
+async def analyze_sketch(sketch: UploadFile = File(...)) -> dict:
+    """Upload a sketch and receive structured room analysis + scene description."""
     image_bytes, mime_type = await _read_and_validate_image(sketch)
-    analysis: RoomAnalysis = await analyze_room(image_bytes, mime_type)
-    return analysis
+
+    analysis, scene_desc = await asyncio.gather(
+        analyze_room(image_bytes, mime_type),
+        describe_scene(image_bytes, mime_type),
+    )
+
+    return {
+        "room_analysis": analysis.model_dump(),
+        "scene_description": scene_desc.model_dump(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +155,11 @@ async def furnish_room(
             detail="Невалиден стил.",
         )
 
-    # -- Step 1: Room analysis --
-    analysis: RoomAnalysis = await analyze_room(image_bytes, mime_type)
+    # -- Step 1: Room analysis + Scene description (parallel) --
+    analysis, scene_desc = await asyncio.gather(
+        analyze_room(image_bytes, mime_type),
+        describe_scene(image_bytes, mime_type),
+    )
 
     # -- Step 2: Select room --
     if not analysis.rooms:
@@ -196,6 +209,7 @@ async def furnish_room(
             tier=tier,
             budget_spent=match_result.budget_spent,
             budget_remaining=match_result.budget_remaining,
+            scene_description=scene_desc.model_dump(),
         )
     except Exception as exc:
         raise HTTPException(
