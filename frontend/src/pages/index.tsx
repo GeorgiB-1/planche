@@ -6,6 +6,7 @@ import RefinementBar from "@/components/RefinementBar";
 import BudgetBar from "@/components/BudgetBar";
 import ProductList from "@/components/ProductList";
 import SwapModal from "@/components/SwapModal";
+import VersionHistory from "@/components/VersionHistory";
 import {
   furnishRoom,
   getAlternatives,
@@ -119,6 +120,11 @@ export default function HomePage() {
   const handleRefineError = useCallback((message: string) => {
     setError(message);
     setIsRefining(false);
+  }, []);
+
+  const handleRevert = useCallback((newRenderUrl: string, version: number) => {
+    setRenderUrl(newRenderUrl);
+    setRenderVersion(version);
   }, []);
 
   // ---- Handlers: Swap ------------------------------------------------------
@@ -314,6 +320,13 @@ export default function HomePage() {
               onRefineStart={handleRefineStart}
               onRefineComplete={handleRefineComplete}
               onError={handleRefineError}
+            />
+
+            {/* Version history */}
+            <VersionHistory
+              designId={designId}
+              currentVersion={renderVersion}
+              onRevert={handleRevert}
             />
 
             {/* Budget + Products row */}

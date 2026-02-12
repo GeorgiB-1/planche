@@ -529,6 +529,20 @@ async def generate_room_design(
 # Iterative Refinement
 # ---------------------------------------------------------------------------
 
+def _is_camera_change(instruction: str) -> bool:
+    """Detect whether the user instruction involves a camera/angle change."""
+    lower = instruction.lower()
+    camera_keywords = [
+        "angle", "camera", "perspective", "rotate", "turn", "degree",
+        "градус", "ъгъл", "завърт", "перспектив", "камер",
+        "left", "right", "up", "down", "наляво", "надясно",
+        "bird", "eye", "overhead", "отгоре", "отдолу",
+        "closer", "further", "zoom", "по-близо", "по-далеч",
+        "wide", "narrow", "панорам",
+    ]
+    return any(kw in lower for kw in camera_keywords)
+
+
 async def refine_design_render(
     design_id: str,
     instruction: str,
@@ -537,8 +551,9 @@ async def refine_design_render(
 ) -> dict:
     """Refine an existing design render based on user instruction.
 
-    Sends the current render + optional reference image + user text to Gemini
-    for a targeted edit. Uploads the new render as a new version.
+    Sends the original sketch + current render + scene context + user text
+    to Gemini for a targeted edit. For camera/angle changes, includes full
+    spatial context so the model can re-render from a new viewpoint.
 
     Returns a dict compatible with RefineResult.
     """
@@ -548,10 +563,10 @@ async def refine_design_render(
     if design is None:
         raise ValueError(f"Design '{design_id}' not found.")
 
-    # 2. Fetch current render from R2
+    # 2. Fetch current render from R2 (higher quality for refinement)
     current_render_key = design["render_r2_key"]
     current_render_bytes = get_r2_image_bytes(current_render_key)
-    current_render_resized = resize_for_prompt(current_render_bytes, max_size=512)
+    current_render_resized = resize_for_prompt(current_render_bytes, max_size=1024)
     current_render_url = get_image_url(current_render_key)
     print(f"[refine] Fetched current render: {current_render_key}")
 
@@ -562,10 +577,44 @@ async def refine_design_render(
     except (ValueError, IndexError):
         current_version = 1
 
-    # 4. Build multimodal prompt
+    # 4. Detect if this is a camera/angle change
+    is_camera = _is_camera_change(instruction) if instruction else False
+
+    # 5. Load original sketch from R2 if available
+    sketch_r2_key = design.get("sketch_r2_key")
+    sketch_bytes: bytes | None = None
+    if sketch_r2_key:
+        try:
+            raw_sketch = get_r2_image_bytes(sketch_r2_key)
+            sketch_bytes = resize_for_prompt(raw_sketch, max_size=1024)
+            print(f"[refine] Loaded original sketch: {sketch_r2_key}")
+        except Exception as exc:
+            print(f"[refine] Could not load sketch: {exc}")
+
+    # 6. Load scene description and room analysis from design record
+    scene_data = design.get("scene_description")
+    room_data = design.get("room_analysis")
+
+    # 7. Build multimodal prompt
     parts: list[genai_types.Part] = []
 
-    # Part 1 — current render image
+    # Part A — original sketch (spatial ground truth)
+    if sketch_bytes is not None:
+        parts.append(
+            genai_types.Part(
+                inline_data=genai_types.Blob(
+                    mime_type="image/webp",
+                    data=base64.b64encode(sketch_bytes).decode("utf-8"),
+                )
+            )
+        )
+        parts.append(
+            genai_types.Part(
+                text="ABOVE: The original sketch this design was based on."
+            )
+        )
+
+    # Part B — current render image
     render_b64 = base64.b64encode(current_render_resized).decode("utf-8")
     parts.append(
         genai_types.Part(
@@ -575,22 +624,60 @@ async def refine_design_render(
             )
         )
     )
-
-    # Part 2 — system preamble
     parts.append(
         genai_types.Part(
-            text=(
-                "You are performing a TARGETED EDIT on the room render above. "
-                "Change ONLY what is requested. Keep everything else "
-                "PIXEL-PERFECT IDENTICAL — same camera angle, lighting, "
-                "other furniture, walls, floor."
-            )
+            text="ABOVE: The current room render (latest version) to be refined."
         )
     )
 
-    # Part 3 — reference image (optional)
+    # Part C — spatial context (scene description + room analysis)
+    context_lines: list[str] = []
+    if scene_data:
+        scene_ctx = _build_scene_context(scene_data)
+        if scene_ctx:
+            context_lines.append(f"SCENE & CAMERA CONTEXT:\n{scene_ctx}")
+    if room_data:
+        # Include basic room info
+        rooms = room_data.get("rooms", [])
+        if rooms:
+            r = rooms[0] if isinstance(rooms, list) else rooms
+            if isinstance(r, dict):
+                room_ctx = _build_room_context(r)
+                context_lines.append(f"ROOM CONTEXT:\n{room_ctx}")
+
+    if context_lines:
+        parts.append(
+            genai_types.Part(text="\n\n".join(context_lines))
+        )
+
+    # Part D — system preamble (different for camera vs non-camera edits)
+    if is_camera:
+        preamble = (
+            "You are RE-RENDERING this room from a DIFFERENT CAMERA ANGLE as "
+            "requested. Use the original sketch and scene context above to "
+            "understand the full 3D layout of the room — where every piece of "
+            "furniture is, what the walls look like, and the room's dimensions. "
+            "Then generate a NEW photorealistic render from the requested "
+            "viewpoint. Keep ALL furniture, colors, materials, lighting, and "
+            "style IDENTICAL — only the camera position and angle should change. "
+            "Do NOT mirror/flip the image. Actually re-render the 3D scene "
+            "from the new viewpoint so objects have correct perspective, "
+            "parallax, and occlusion."
+        )
+    else:
+        preamble = (
+            "You are performing a TARGETED EDIT on the room render above. "
+            "Change ONLY what is requested. Keep everything else IDENTICAL — "
+            "same camera angle, same perspective, same lighting, same "
+            "furniture (unless specifically asked to change), same walls, "
+            "same floor. The result should look like the same photograph "
+            "with only the requested modification applied."
+        )
+    parts.append(genai_types.Part(text=preamble))
+
+    # Part E — reference image (optional)
     if reference_image_bytes is not None:
-        ref_resized = resize_for_prompt(reference_image_bytes, max_size=512)
+        ref_resized = resize_for_prompt(reference_image_bytes, max_size=1024)
         ref_b64 = base64.b64encode(ref_resized).decode("utf-8")
         ref_mime = reference_image_mime or "image/webp"
         parts.append(
@@ -601,14 +688,13 @@ async def refine_design_render(
                 )
             )
         )
-        # Part 4 — reference context
         parts.append(
             genai_types.Part(
-                text="Match the appearance of the item in the reference image above."
+                text="ABOVE: Reference image. Match its appearance for the relevant item."
             )
         )
 
-    # Part 5 — user instruction
+    # Part F — user instruction
     if instruction.strip():
         parts.append(
             genai_types.Part(text=f"EDIT INSTRUCTION: {instruction}")
@@ -620,18 +706,24 @@ async def refine_design_render(
             )
         )
 
-    # Part 6 — constraints
-    parts.append(
-        genai_types.Part(
-            text=(
-                "Generate ONE photorealistic image. Do NOT add text, labels, "
-                "or watermarks. Do NOT change room type or camera angle."
-            )
+    # Part G — constraints
+    if is_camera:
+        constraints = (
+            "Generate ONE photorealistic image from the new camera angle. "
+            "Do NOT add text, labels, or watermarks. Do NOT add or remove "
+            "any furniture. Do NOT mirror/flip — re-render with correct "
+            "3D perspective from the new viewpoint."
         )
-    )
+    else:
+        constraints = (
+            "Generate ONE photorealistic image. Do NOT add text, labels, "
+            "or watermarks. Do NOT change camera angle or perspective. "
+            "Do NOT add or remove furniture unless specifically requested."
+        )
+    parts.append(genai_types.Part(text=constraints))
 
-    # 5. Call Gemini
-    print(f"[refine] Generating refined render for design {design_id}...")
+    # 8. Call Gemini
+    print(f"[refine] Generating refined render for design {design_id} (camera_change={is_camera})...")
 
     config = genai_types.GenerateContentConfig(
         response_modalities=["IMAGE", "TEXT"],
@@ -647,7 +739,7 @@ async def refine_design_render(
         config=config,
     )
 
-    # 6. Extract generated image
+    # 9. Extract generated image
     render_bytes: bytes | None = None
     if response.candidates:
         for part in response.candidates[0].content.parts:
@@ -664,17 +756,17 @@ async def refine_design_render(
             "Gemini не генерира изображение. Моля, опитайте с различна инструкция."
         )
 
-    # 7. Upload new render to R2
+    # 10. Upload new render to R2
     new_version = current_version + 1
     new_render_key = f"renders/{design_id}/render_v{new_version}.webp"
     new_render_url = upload_image(render_bytes, new_render_key, content_type="image/webp")
     print(f"[refine] New render uploaded to R2: {new_render_key}")
 
-    # 8. Update design in Supabase
+    # 11. Update design in Supabase
     update_design(design_id, {"render_r2_key": new_render_key})
     print(f"[refine] Design {design_id} updated with version {new_version}")
 
-    # 9. Return RefineResult-compatible dict
+    # 12. Return RefineResult-compatible dict
     return {
         "design_id": design_id,
         "render_url": new_render_url,

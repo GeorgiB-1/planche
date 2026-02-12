@@ -101,6 +101,24 @@ export interface SwapResult {
   new_product: Record<string, any>;
 }
 
+export interface RenderVersion {
+  version: number;
+  r2_key: string;
+  url: string;
+}
+
+export interface VersionsResult {
+  design_id: string;
+  current_version: number;
+  versions: RenderVersion[];
+}
+
+export interface RevertResult {
+  design_id: string;
+  render_url: string;
+  version: number;
+}
+
 export interface Stats {
   total_products: number;
   vision_enriched: number;
@@ -305,4 +323,39 @@ export async function refineDesign(
   });
 
   return _handleResponse<RefineResult>(res);
+}
+
+/**
+ * Get all render versions for a design.
+ *
+ * GET /api/designs/{designId}/versions
+ */
+export async function getDesignVersions(
+  designId: string
+): Promise<VersionsResult> {
+  const res = await fetch(`${API_BASE}/api/designs/${designId}/versions`, {
+    method: "GET",
+  });
+
+  return _handleResponse<VersionsResult>(res);
+}
+
+/**
+ * Revert a design to a specific version.
+ *
+ * POST /api/designs/{designId}/revert
+ */
+export async function revertDesignVersion(
+  designId: string,
+  version: number
+): Promise<RevertResult> {
+  const form = new FormData();
+  form.append("version", String(version));
+
+  const res = await fetch(`${API_BASE}/api/designs/${designId}/revert`, {
+    method: "POST",
+    body: form,
+  });
+
+  return _handleResponse<RevertResult>(res);
 }

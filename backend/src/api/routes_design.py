@@ -16,7 +16,7 @@ from src.models.room import RoomAnalysis, SceneDescription
 from src.services.generator import generate_room_design, refine_design_render, swap_product_in_design
 from src.services.matcher import match_furniture_for_room
 from src.services.room_analyzer import analyze_room, describe_scene
-from src.storage.r2_client import get_image_url
+from src.storage.r2_client import get_image_url, list_render_versions
 from src.storage.supabase_client import get_design, get_product_by_id, query_products
 
 router = APIRouter(prefix="/api", tags=["design"])
@@ -276,6 +276,66 @@ async def refine_design(
         ) from exc
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# GET /api/designs/{design_id}/versions
+# ---------------------------------------------------------------------------
+
+@router.get("/designs/{design_id}/versions")
+async def get_design_versions(design_id: str) -> dict:
+    """Return all render versions for a design, ordered by version number."""
+    design = get_design(design_id)
+    if design is None:
+        raise HTTPException(status_code=404, detail=f"Design '{design_id}' not found.")
+
+    versions = list_render_versions(design_id)
+
+    # Also include the current active version
+    current_key = design.get("render_r2_key", "")
+    current_version = 1
+    try:
+        current_version = int(current_key.rsplit("_v", 1)[-1].replace(".webp", ""))
+    except (ValueError, IndexError):
+        pass
+
+    return {
+        "design_id": design_id,
+        "current_version": current_version,
+        "versions": versions,
+    }
+
+
+# ---------------------------------------------------------------------------
+# POST /api/designs/{design_id}/revert
+# ---------------------------------------------------------------------------
+
+@router.post("/designs/{design_id}/revert")
+async def revert_design_version(design_id: str, version: int = Form(...)) -> dict:
+    """Revert a design to a specific render version."""
+    from src.storage.supabase_client import update_design
+
+    design = get_design(design_id)
+    if design is None:
+        raise HTTPException(status_code=404, detail=f"Design '{design_id}' not found.")
+
+    # Verify the version exists in R2
+    versions = list_render_versions(design_id)
+    target = next((v for v in versions if v["version"] == version), None)
+    if target is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Version {version} not found for design '{design_id}'.",
+        )
+
+    # Update the active render key
+    update_design(design_id, {"render_r2_key": target["r2_key"]})
+
+    return {
+        "design_id": design_id,
+        "render_url": target["url"],
+        "version": version,
+    }
 
 
 # ---------------------------------------------------------------------------

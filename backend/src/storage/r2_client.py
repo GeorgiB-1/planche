@@ -124,6 +124,38 @@ def get_r2_image_bytes(r2_key: str) -> bytes:
         raise
 
 
+def list_render_versions(design_id: str) -> list[dict]:
+    """List all render versions for a design, sorted by version number.
+
+    Returns a list of dicts: [{"version": 1, "r2_key": "...", "url": "..."}]
+    """
+    prefix = f"renders/{design_id}/render_v"
+    try:
+        response = s3.list_objects_v2(Bucket=R2_BUCKET, Prefix=prefix)
+        contents = response.get("Contents", [])
+    except Exception as e:
+        print(f"[r2_client] list_render_versions error for '{design_id}': {e}")
+        return []
+
+    versions = []
+    for obj in contents:
+        key = obj["Key"]
+        # Extract version number from renders/{id}/render_v{N}.webp
+        try:
+            v_str = key.rsplit("_v", 1)[-1].replace(".webp", "")
+            version = int(v_str)
+        except (ValueError, IndexError):
+            continue
+        versions.append({
+            "version": version,
+            "r2_key": key,
+            "url": get_image_url(key),
+        })
+
+    versions.sort(key=lambda v: v["version"])
+    return versions
+
+
 def delete_image(r2_key: str):
     """Delete an object from R2."""
     try:
